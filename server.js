@@ -83,7 +83,7 @@ const pdfSchema = new mongoose.Schema({
   }
 });
 
-const PDF = mongoose.model('PDF', pdfSchema);
+const PDF = mongoose.models.PDF || mongoose.model("PDF", pdfSchema);
 
 // Create assets folder if it doesn't exist
 const assetsDir = path.join(__dirname, 'assets');
