@@ -231,7 +231,7 @@ app.post('/api/upload-pdf', verifyAdmin, upload.single('pdf'), async (req, res) 
 // Get all PDFs endpoint
 app.get('/api/pdfs', async (req, res) => {
   try {
-    const pdfs = await PDF.find().sort({ uploadDate: -1 });
+    const pdfs = await PDF.find({}).sort({ uploadDate: -1 });
     const pdfsWithUrl = pdfs.map(pdf => ({
       id: pdf._id,
       filename: pdf.filename,
