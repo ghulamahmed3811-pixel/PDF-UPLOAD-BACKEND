@@ -88,7 +88,8 @@ const PDF = mongoose.models.PDF || mongoose.model("PDF", pdfSchema);
 // Create assets folder if it doesn't exist
 const assetsDir = path.join(__dirname, 'assets');
 if (!fs.existsSync(assetsDir)) {
-  fs.mkdirSync(assetsDir, { recursive: true });
+  const assetsPath = "/tmp/assets";
+fs.mkdirSync(assetsPath, { recursive: true });
 }
 
 // Configure multer for file upload
