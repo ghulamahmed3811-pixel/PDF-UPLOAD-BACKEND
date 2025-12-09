@@ -4,13 +4,21 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const cors = require('cors');
+const crypto = require('crypto');
 require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Admin configuration
+const ADMIN_KEY = process.env.ADMIN_KEY || 'admin'; // Secret admin key from .env or default
+const ADMIN_SESSIONS = new Map(); // Store active admin sessions (in production, use Redis or database)
+
 // Middleware
-app.use(cors()); // Enable CORS for Angular app
+app.use(cors({
+  origin: true, // Allow all origins (adjust for production)
+  credentials: true // Allow cookies/sessions
+}));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -110,8 +118,81 @@ const upload = multer({
   }
 });
 
-// Upload PDF endpoint
-app.post('/api/upload-pdf', upload.single('pdf'), async (req, res) => {
+// Admin authentication endpoint
+app.post('/api/admin/auth', (req, res) => {
+  try {
+    const { adminKey } = req.body;
+    
+    if (!adminKey) {
+      return res.status(400).json({ error: 'Admin key is required' });
+    }
+    
+    // Verify admin key
+    if (adminKey !== ADMIN_KEY) {
+      return res.status(401).json({ error: 'Invalid admin key' });
+    }
+    
+    // Generate a secure session token
+    const sessionToken = crypto.randomBytes(32).toString('hex');
+    const expiresAt = Date.now() + (24 * 60 * 60 * 1000); // 24 hours
+    
+    // Store session
+    ADMIN_SESSIONS.set(sessionToken, {
+      createdAt: Date.now(),
+      expiresAt: expiresAt
+    });
+    
+    console.log('✅ Admin authenticated, session created');
+    
+    res.json({
+      success: true,
+      message: 'Admin authenticated successfully',
+      sessionToken: sessionToken,
+      expiresAt: expiresAt
+    });
+  } catch (error) {
+    console.error('Admin auth error:', error);
+    res.status(500).json({ error: 'Authentication failed', details: error.message });
+  }
+});
+
+// Middleware to verify admin session
+const verifyAdmin = (req, res, next) => {
+  const sessionToken = req.headers['x-admin-token'] || req.body.sessionToken;
+  
+  if (!sessionToken) {
+    return res.status(401).json({ error: 'Admin authentication required' });
+  }
+  
+  const session = ADMIN_SESSIONS.get(sessionToken);
+  
+  if (!session) {
+    return res.status(401).json({ error: 'Invalid or expired admin session' });
+  }
+  
+  // Check if session expired
+  if (Date.now() > session.expiresAt) {
+    ADMIN_SESSIONS.delete(sessionToken);
+    return res.status(401).json({ error: 'Admin session expired' });
+  }
+  
+  // Session is valid
+  req.adminSession = session;
+  next();
+};
+
+// Cleanup expired sessions periodically (every hour)
+setInterval(() => {
+  const now = Date.now();
+  for (const [token, session] of ADMIN_SESSIONS.entries()) {
+    if (now > session.expiresAt) {
+      ADMIN_SESSIONS.delete(token);
+    }
+  }
+}, 60 * 60 * 1000); // Run every hour
+
+// Upload PDF endpoint - PROTECTED
+app.post('/api/upload-pdf', verifyAdmin, upload.single('pdf'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No PDF file uploaded' });
@@ -209,8 +290,8 @@ app.get('/api/pdfs/:id/view', async (req, res) => {
   }
 });
 
-// Delete PDF endpoint
-app.delete('/api/pdfs/:id', async (req, res) => {
+// Delete PDF endpoint - PROTECTED
+app.delete('/api/pdfs/:id', verifyAdmin, async (req, res) => {
   try {
     const pdf = await PDF.findById(req.params.id);
     if (!pdf) {
