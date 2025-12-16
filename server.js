@@ -202,9 +202,11 @@ app.post('/api/upload-pdf', verifyAdmin, upload.single('pdf'), async (req, res) 
       return res.status(400).json({ error: 'No PDF file uploaded' });
     }
 
+    console.log('Uploaded file info:', req.file);
+
     // Store only the relative path (assets/filename.pdf) instead of full absolute path
     const relativePath = path.join('assets', req.file.filename).replace(/\\/g, '/'); // Use forward slashes
-    
+    console.log('Uploaded file path (relative):', relativePath);
     const pdfData = new PDF({
       filename: req.file.filename,
       originalName: req.file.originalname,
