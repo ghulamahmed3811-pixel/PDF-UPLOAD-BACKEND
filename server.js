@@ -17,7 +17,10 @@ const ADMIN_SESSIONS = new Map(); // Store active admin sessions (in production,
 // Middleware
 app.use(cors({
   origin: true, // Allow all origins (adjust for production)
-  credentials: true // Allow cookies/sessions
+  credentials: true, // Allow cookies/sessions
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Admin-Token', 'Accept'],
+  exposedHeaders: ['Content-Type', 'Content-Disposition']
 }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
