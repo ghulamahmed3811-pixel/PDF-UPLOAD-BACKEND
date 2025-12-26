@@ -1,10 +1,10 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const multer = require('multer');
-const path = require('path');
-const fs = require('fs');
 const cors = require('cors');
 const crypto = require('crypto');
+const cloudinary = require('cloudinary').v2;
+const { Readable } = require('stream');
 require('dotenv').config();
 
 const app = express();
@@ -25,8 +25,7 @@ app.use(cors({
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Serve static files from assets folder
-app.use('/assets', express.static(path.join(__dirname, 'assets')));
+// Static files now served from Cloudinary - removed local assets folder
 
 // Test endpoint to verify server is running
 app.get('/api/test', (req, res) => {
@@ -88,23 +87,22 @@ const pdfSchema = new mongoose.Schema({
 
 const PDF = mongoose.models.PDF || mongoose.model("PDF", pdfSchema);
 
-// Create assets folder if it doesn't exist
-const assetsDir = path.join(__dirname, 'assets');
-if (!fs.existsSync(assetsDir)) {
-  const assetsPath = "/tmp/assets";
-fs.mkdirSync(assetsPath, { recursive: true });
+// Configure Cloudinary
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET
+});
+
+if (!process.env.CLOUDINARY_CLOUD_NAME || !process.env.CLOUDINARY_API_KEY || !process.env.CLOUDINARY_API_SECRET) {
+  console.warn('⚠️  Cloudinary credentials not found in .env file');
+  console.warn('💡 Please add: CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET');
+} else {
+  console.log('✅ Cloudinary configured successfully');
 }
 
-// Configure multer for file upload
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, assetsDir);
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    cb(null, uniqueSuffix + path.extname(file.originalname));
-  }
-});
+// Configure multer to use memory storage (for Cloudinary upload)
+const storage = multer.memoryStorage();
 
 const fileFilter = (req, file, cb) => {
   if (file.mimetype === 'application/pdf') {
@@ -202,15 +200,44 @@ app.post('/api/upload-pdf', verifyAdmin, upload.single('pdf'), async (req, res) 
       return res.status(400).json({ error: 'No PDF file uploaded' });
     }
 
-    console.log('Uploaded file info:', req.file);
+    console.log(`📤 Uploading PDF to Cloudinary: ${req.file.originalname} (${(req.file.size / 1024).toFixed(2)} KB)`);
 
-    // Store only the relative path (assets/filename.pdf) instead of full absolute path
-    const relativePath = path.join('assets', req.file.filename).replace(/\\/g, '/'); // Use forward slashes
-    console.log('Uploaded file path (relative):', relativePath);
+    // Upload to Cloudinary
+    const uniqueFilename = `${Date.now()}-${Math.round(Math.random() * 1E9)}`;
+    
+    const uploadPromise = new Promise((resolve, reject) => {
+      const uploadStream = cloudinary.uploader.upload_stream(
+        {
+          resource_type: 'raw', // Use 'raw' for PDFs
+          folder: 'pdf-uploads',
+          public_id: uniqueFilename,
+          format: 'pdf',
+          overwrite: false
+        },
+        (error, result) => {
+          if (error) {
+            reject(error);
+          } else {
+            resolve(result);
+          }
+        }
+      );
+
+      // Pipe the file buffer to Cloudinary
+      const bufferStream = new Readable();
+      bufferStream.push(req.file.buffer);
+      bufferStream.push(null);
+      bufferStream.pipe(uploadStream);
+    });
+
+    const result = await uploadPromise;
+    console.log('✅ PDF uploaded to Cloudinary:', result.secure_url);
+
+    // Store Cloudinary URL in database
     const pdfData = new PDF({
-      filename: req.file.filename,
+      filename: `${uniqueFilename}.pdf`,
       originalName: req.file.originalname,
-      filePath: relativePath, // Store relative path only
+      filePath: result.secure_url, // Store Cloudinary URL
       fileSize: req.file.size
     });
 
@@ -224,7 +251,7 @@ app.post('/api/upload-pdf', verifyAdmin, upload.single('pdf'), async (req, res) 
         originalName: savedPdf.originalName,
         fileSize: savedPdf.fileSize,
         uploadDate: savedPdf.uploadDate,
-        url: `/assets/${savedPdf.filename}`
+        url: savedPdf.filePath // Return Cloudinary URL (maintains API structure)
       }
     });
   } catch (error) {
@@ -243,7 +270,7 @@ app.get('/api/pdfs', async (req, res) => {
       originalName: pdf.originalName,
       fileSize: pdf.fileSize,
       uploadDate: pdf.uploadDate,
-      url: `/assets/${pdf.filename}`
+      url: pdf.filePath // Return Cloudinary URL from database
     }));
     res.json({ pdfs: pdfsWithUrl });
   } catch (error) {
@@ -266,7 +293,7 @@ app.get('/api/pdfs/:id', async (req, res) => {
       originalName: pdf.originalName,
       fileSize: pdf.fileSize,
       uploadDate: pdf.uploadDate,
-      url: `/assets/${pdf.filename}`
+      url: pdf.filePath // Return Cloudinary URL from database
     });
   } catch (error) {
     console.error('Error fetching PDF:', error);
@@ -274,7 +301,7 @@ app.get('/api/pdfs/:id', async (req, res) => {
   }
 });
 
-// Serve PDF file endpoint (for Angular app)
+// Serve PDF file endpoint (for Angular app) - Redirects to Cloudinary URL
 app.get('/api/pdfs/:id/view', async (req, res) => {
   try {
     const pdf = await PDF.findById(req.params.id);
@@ -282,14 +309,12 @@ app.get('/api/pdfs/:id/view', async (req, res) => {
       return res.status(404).json({ error: 'PDF not found' });
     }
 
-    const filePath = path.join(__dirname, 'assets', pdf.filename);
-    if (!fs.existsSync(filePath)) {
-      return res.status(404).json({ error: 'PDF file not found on server' });
+    // Redirect to Cloudinary URL (works directly in iframes)
+    if (pdf.filePath && pdf.filePath.startsWith('http')) {
+      res.redirect(302, pdf.filePath);
+    } else {
+      return res.status(404).json({ error: 'PDF URL not found' });
     }
-
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `inline; filename="${pdf.originalName}"`);
-    res.sendFile(filePath);
   } catch (error) {
     console.error('Error serving PDF:', error);
     res.status(500).json({ error: 'Failed to serve PDF', details: error.message });
@@ -304,23 +329,27 @@ app.delete('/api/pdfs/:id', verifyAdmin, async (req, res) => {
       return res.status(404).json({ error: 'PDF not found' });
     }
 
-    // Delete the file from filesystem
-    // Handle both relative path (assets/filename.pdf) and absolute path (for backward compatibility)
-    let filePath;
-    if (pdf.filePath.startsWith('assets/') || pdf.filePath.startsWith('assets\\')) {
-      // Relative path - construct full path
-      filePath = path.join(__dirname, pdf.filePath);
-    } else if (path.isAbsolute(pdf.filePath)) {
-      // Absolute path (old format) - use as is
-      filePath = pdf.filePath;
-    } else {
-      // Fallback to assets folder
-      filePath = path.join(__dirname, 'assets', pdf.filename);
-    }
-    
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
-      console.log('Deleted file:', filePath);
+    // Delete from Cloudinary if it's a Cloudinary URL
+    if (pdf.filePath && pdf.filePath.includes('cloudinary.com')) {
+      try {
+        // Extract public_id from Cloudinary URL
+        // URL format: https://res.cloudinary.com/cloud_name/raw/upload/v1234567890/pdf-uploads/public_id.pdf
+        const urlParts = pdf.filePath.split('/');
+        const uploadIndex = urlParts.findIndex(part => part === 'upload');
+        if (uploadIndex !== -1 && uploadIndex < urlParts.length - 1) {
+          // Get everything after 'upload' including folder and public_id
+          const pathAfterUpload = urlParts.slice(uploadIndex + 2).join('/'); // Skip 'upload' and version
+          const publicId = pathAfterUpload.replace(/\.[^/.]+$/, ''); // Remove file extension
+          
+          const result = await cloudinary.uploader.destroy(publicId, { 
+            resource_type: 'raw' 
+          });
+          console.log('✅ Deleted from Cloudinary:', publicId, result);
+        }
+      } catch (cloudinaryError) {
+        console.error('⚠️  Failed to delete from Cloudinary:', cloudinaryError);
+        // Continue with database deletion even if Cloudinary deletion fails
+      }
     }
 
     // Delete from database
@@ -336,7 +365,13 @@ app.delete('/api/pdfs/:id', verifyAdmin, async (req, res) => {
   }
 });
 
-// Start server
-app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
-});
+// Export app for Vercel (serverless)
+module.exports = app;
+
+// Start server only in local/development environment
+const isServerless = !!(process.env.VERCEL || process.env.VERCEL_ENV);
+if (!isServerless) {
+  app.listen(PORT, () => {
+    console.log(`Server running on http://localhost:${PORT}`);
+  });
+}
