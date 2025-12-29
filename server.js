@@ -59,7 +59,7 @@ app.use(cors({
   credentials: true, // Allow cookies/sessions
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Admin-Token', 'Accept'],
-  exposedHeaders: ['Content-Type', 'Content-Disposition']
+  exposedHeaders: ['Content-Type']
 }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -597,17 +597,36 @@ function handleCloudinaryResponse(cloudinaryRes, pdf, res, url) {
   }
 
   console.log(`✅ Successfully fetching PDF from Cloudinary, status: ${cloudinaryRes.statusCode}`);
-  console.log(`   Content-Type: ${cloudinaryRes.headers['content-type']}`);
+  console.log(`   Cloudinary Content-Type: ${cloudinaryRes.headers['content-type']}`);
+  console.log(`   Cloudinary Content-Disposition: ${cloudinaryRes.headers['content-disposition'] || 'none'}`);
   console.log(`   Content-Length: ${cloudinaryRes.headers['content-length']}`);
 
-  // Set appropriate headers for PDF BEFORE piping
-  res.setHeader('Content-Type', cloudinaryRes.headers['content-type'] || 'application/pdf');
-  res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(pdf.originalName)}"`);
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Expose-Headers', 'Content-Type, Content-Disposition');
-  res.setHeader('Cache-Control', 'public, max-age=3600');
+  // CRITICAL: Use writeHead to explicitly commit headers before any data
+  // DO NOT include Content-Disposition header - this causes downloads
+  // Only Content-Type: application/pdf is needed for browsers to display inline
+  if (!res.headersSent) {
+    const headers = {
+      'Content-Type': 'application/pdf',
+      'Cache-Control': 'public, max-age=3600',
+      'Accept-Ranges': 'bytes'
+    };
+    
+    // Add Content-Length if available
+    if (cloudinaryRes.headers['content-length']) {
+      headers['Content-Length'] = cloudinaryRes.headers['content-length'];
+    }
+    
+    // Use writeHead to commit headers explicitly - this prevents Express from adding anything
+    res.writeHead(200, headers);
+    
+    console.log(`   ✅ Headers committed - Content-Type: application/pdf`);
+    console.log(`   ✅ NO Content-Disposition header`);
+  } else {
+    console.error('❌ ERROR: Headers already sent!');
+    return;
+  }
   
-  // Stream the PDF from Cloudinary to client
+  // Pipe the stream - headers are already committed, so this will just send data
   cloudinaryRes.pipe(res);
   
   cloudinaryRes.on('error', (err) => {
