@@ -646,43 +646,76 @@ function handleCloudinaryResponse(cloudinaryRes, pdf, res, url) {
 // Delete PDF endpoint - PROTECTED
 app.delete('/api/pdfs/:id', verifyAdmin, async (req, res) => {
   try {
-    const pdf = await PDF.findById(req.params.id);
+    const pdfId = req.params.id;
+    console.log(`🗑️  Delete request for PDF ID: ${pdfId}`);
+    
+    // Validate MongoDB ObjectId format
+    if (!mongoose.Types.ObjectId.isValid(pdfId)) {
+      console.error(`❌ Invalid PDF ID format: ${pdfId}`);
+      return res.status(400).json({ error: 'Invalid PDF ID format' });
+    }
+    
+    const pdf = await PDF.findById(pdfId);
     if (!pdf) {
+      console.error(`❌ PDF not found with ID: ${pdfId}`);
       return res.status(404).json({ error: 'PDF not found' });
     }
+
+    console.log(`✅ PDF found: ${pdf.originalName}`);
+    console.log(`   File path: ${pdf.filePath}`);
 
     // Delete from Cloudinary if it's a Cloudinary URL
     if (pdf.filePath && pdf.filePath.includes('cloudinary.com')) {
       try {
-        // Extract public_id from Cloudinary URL
-        // URL format: https://res.cloudinary.com/cloud_name/raw/upload/v1234567890/pdf-uploads/public_id.pdf
-        const urlParts = pdf.filePath.split('/');
-        const uploadIndex = urlParts.findIndex(part => part === 'upload');
-        if (uploadIndex !== -1 && uploadIndex < urlParts.length - 1) {
-          // Get everything after 'upload' including folder and public_id
-          const pathAfterUpload = urlParts.slice(uploadIndex + 2).join('/'); // Skip 'upload' and version
-          const publicId = pathAfterUpload.replace(/\.[^/.]+$/, ''); // Remove file extension
-          
+        // Extract public_id from Cloudinary URL using the same logic as view endpoint
+        // URL format: https://res.cloudinary.com/{cloud_name}/raw/upload/{version}/{folder}/{public_id}
+        let publicId = '';
+        
+        try {
+          const urlMatch = pdf.filePath.match(/\/raw\/upload\/[^/]+\/(.+)$/);
+          if (urlMatch) {
+            publicId = urlMatch[1].replace(/\.pdf$/i, ''); // Remove .pdf extension if present
+          } else {
+            // Fallback: try to extract from pathname
+            const parsedUrl = new URL(pdf.filePath);
+            const pathParts = parsedUrl.pathname.split('/');
+            const rawIndex = pathParts.indexOf('raw');
+            if (rawIndex >= 0 && pathParts[rawIndex + 1] === 'upload') {
+              // Extract everything after 'upload' excluding version
+              publicId = pathParts.slice(rawIndex + 3).join('/').replace(/\.pdf$/i, '');
+            }
+          }
+        } catch (parseError) {
+          console.error('❌ Error parsing Cloudinary URL:', parseError);
+        }
+
+        if (publicId) {
+          console.log(`   Extracted public_id: ${publicId}`);
           const result = await cloudinary.uploader.destroy(publicId, { 
             resource_type: 'raw' 
           });
-          console.log('✅ Deleted from Cloudinary:', publicId, result);
+          console.log(`✅ Deleted from Cloudinary: ${publicId}`, result);
+        } else {
+          console.warn('⚠️  Could not extract public_id from URL, skipping Cloudinary deletion');
         }
       } catch (cloudinaryError) {
         console.error('⚠️  Failed to delete from Cloudinary:', cloudinaryError);
         // Continue with database deletion even if Cloudinary deletion fails
       }
+    } else {
+      console.log('   Not a Cloudinary URL, skipping Cloudinary deletion');
     }
 
     // Delete from database
-    await PDF.findByIdAndDelete(req.params.id);
+    await PDF.findByIdAndDelete(pdfId);
+    console.log(`✅ PDF deleted from database: ${pdfId}`);
 
     res.json({ 
       message: 'PDF deleted successfully',
-      id: req.params.id
+      id: pdfId
     });
   } catch (error) {
-    console.error('Error deleting PDF:', error);
+    console.error('❌ Error deleting PDF:', error);
     res.status(500).json({ error: 'Failed to delete PDF', details: error.message });
   }
 });
