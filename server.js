@@ -88,16 +88,81 @@ if (!MONGODB_URI) {
   console.warn('💡 Please create a .env file with: MONGODB_URI=your_connection_string');
 }
 
-mongoose.connect(MONGODB_URI || 'mongodb://localhost:27017/pdfstorage')
-.then(() => {
-  console.log('✅ MongoDB connected successfully');
-  if (MONGODB_URI) {
-    console.log('📝 Using connection string from .env file');
+// Optimize MongoDB connection for serverless (Vercel)
+const mongooseOptions = {
+  bufferCommands: false, // Disable mongoose buffering; throw immediately if not connected
+  bufferMaxEntries: 0, // Disable mongoose buffering
+  maxPoolSize: 10, // Maintain up to 10 socket connections
+  serverSelectionTimeoutMS: 5000, // Keep trying to send operations for 5 seconds
+  socketTimeoutMS: 45000, // Close sockets after 45 seconds of inactivity
+  family: 4 // Use IPv4, skip trying IPv6
+};
+
+// Cache the connection to reuse across serverless invocations
+let cachedConnection = null;
+
+// Function to ensure MongoDB connection (critical for serverless)
+async function ensureDBConnection() {
+  if (cachedConnection && mongoose.connection.readyState === 1) {
+    // Connection is already established and ready
+    return cachedConnection;
   }
-})
-.catch((err) => {
-  console.error('❌ MongoDB connection error:', err.message);
-  process.exit(1);
+
+  if (mongoose.connection.readyState === 1) {
+    // Connection is ready, cache it
+    cachedConnection = mongoose.connection;
+    return cachedConnection;
+  }
+
+  // Connection not ready, establish it
+  try {
+    if (!cachedConnection || mongoose.connection.readyState === 0) {
+      await mongoose.connect(MONGODB_URI || 'mongodb://localhost:27017/pdfstorage', mongooseOptions);
+      cachedConnection = mongoose.connection;
+      console.log('✅ MongoDB connected successfully (new connection)');
+    } else {
+      console.log('✅ MongoDB connection reused');
+    }
+    return cachedConnection;
+  } catch (error) {
+    console.error('❌ MongoDB connection error:', error.message);
+    throw error;
+  }
+}
+
+// Initial connection (non-blocking for serverless)
+mongoose.connect(MONGODB_URI || 'mongodb://localhost:27017/pdfstorage', mongooseOptions)
+  .then(() => {
+    cachedConnection = mongoose.connection;
+    console.log('✅ MongoDB connected successfully');
+    if (MONGODB_URI) {
+      console.log('📝 Using connection string from .env file');
+    }
+  })
+  .catch((err) => {
+    console.error('❌ MongoDB initial connection error:', err.message);
+    // Don't exit in serverless - connection will be retried on first request
+    if (process.env.VERCEL || process.env.VERCEL_ENV) {
+      console.warn('⚠️  Serverless environment detected - connection will be retried on first request');
+    } else {
+      process.exit(1);
+    }
+  });
+
+// Handle connection events for reconnection
+mongoose.connection.on('connected', () => {
+  console.log('✅ MongoDB connection established');
+  cachedConnection = mongoose.connection;
+});
+
+mongoose.connection.on('error', (err) => {
+  console.error('❌ MongoDB connection error:', err);
+  cachedConnection = null;
+});
+
+mongoose.connection.on('disconnected', () => {
+  console.warn('⚠️  MongoDB disconnected - will reconnect on next request');
+  cachedConnection = null;
 });
 
 // PDF Schema
@@ -162,6 +227,9 @@ const upload = multer({
 // Admin authentication endpoint
 app.post('/api/admin/auth', async (req, res) => {
   try {
+    // Ensure database connection before operations
+    await ensureDBConnection();
+    
     const { adminKey } = req.body;
     
     if (!adminKey) {
@@ -243,6 +311,9 @@ const verifyAdmin = async (req, res, next) => {
   }
   
   try {
+    // Ensure database connection before operations
+    await ensureDBConnection();
+    
     // First try MongoDB (persistent across serverless invocations)
     const dbSession = await AdminSession.findOne({ sessionToken: sessionToken });
     
@@ -310,6 +381,9 @@ setInterval(() => {
 // Upload PDF endpoint - PROTECTED
 app.post('/api/upload-pdf', verifyAdmin, upload.single('pdf'), async (req, res) => {
   try {
+    // Ensure database connection before operations
+    await ensureDBConnection();
+    
     if (!req.file) {
       return res.status(400).json({ error: 'No PDF file uploaded' });
     }
@@ -394,6 +468,9 @@ app.post('/api/upload-pdf', verifyAdmin, upload.single('pdf'), async (req, res) 
 // Get all PDFs endpoint - NO AUTH REQUIRED
 app.get('/api/pdfs', async (req, res) => {
   try {
+    // Ensure database connection before operations
+    await ensureDBConnection();
+    
     const pdfs = await PDF.find({}).sort({ uploadDate: -1 });
     const baseUrl = getBaseUrl(req);
     const pdfsWithUrl = pdfs.map(pdf => ({
@@ -414,6 +491,9 @@ app.get('/api/pdfs', async (req, res) => {
 // Get single PDF by ID endpoint - NO AUTH REQUIRED
 app.get('/api/pdfs/:id', async (req, res) => {
   try {
+    // Ensure database connection before operations
+    await ensureDBConnection();
+    
     const pdf = await PDF.findById(req.params.id);
     if (!pdf) {
       return res.status(404).json({ error: 'PDF not found' });
@@ -441,6 +521,9 @@ app.get('/api/pdfs/:id', async (req, res) => {
 // This bypasses public delivery restrictions and 401 errors using authenticated Admin API calls
 app.get('/api/pdfs/:id/view', async (req, res) => {
   try {
+    // Ensure database connection before operations
+    await ensureDBConnection();
+    
     const pdf = await PDF.findById(req.params.id);
     if (!pdf) {
       return res.status(404).json({ error: 'PDF not found' });
@@ -646,6 +729,9 @@ function handleCloudinaryResponse(cloudinaryRes, pdf, res, url) {
 // Delete PDF endpoint - PROTECTED
 app.delete('/api/pdfs/:id', verifyAdmin, async (req, res) => {
   try {
+    // Ensure database connection before operations
+    await ensureDBConnection();
+    
     const pdfId = req.params.id;
     console.log(`🗑️  Delete request for PDF ID: ${pdfId}`);
     
