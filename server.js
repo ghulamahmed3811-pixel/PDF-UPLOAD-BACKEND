@@ -89,14 +89,8 @@ if (!MONGODB_URI) {
 }
 
 // Optimize MongoDB connection for serverless (Vercel)
-const mongooseOptions = {
-  bufferCommands: false, // Disable mongoose buffering; throw immediately if not connected
-  bufferMaxEntries: 0, // Disable mongoose buffering
-  maxPoolSize: 10, // Maintain up to 10 socket connections
-  serverSelectionTimeoutMS: 5000, // Keep trying to send operations for 5 seconds
-  socketTimeoutMS: 45000, // Close sockets after 45 seconds of inactivity
-  family: 4 // Use IPv4, skip trying IPv6
-};
+// Using minimal options - connection caching handles serverless optimization
+const mongooseOptions = {};
 
 // Cache the connection to reuse across serverless invocations
 let cachedConnection = null;
