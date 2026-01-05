@@ -465,6 +465,11 @@ app.get('/api/pdfs', async (req, res) => {
     // Ensure database connection before operations
     await ensureDBConnection();
     
+    // Set headers to prevent caching - ensure fresh data on every request
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    
     const pdfs = await PDF.find({}).sort({ uploadDate: -1 });
     const baseUrl = getBaseUrl(req);
     const pdfsWithUrl = pdfs.map(pdf => ({
@@ -487,6 +492,11 @@ app.get('/api/pdfs/:id', async (req, res) => {
   try {
     // Ensure database connection before operations
     await ensureDBConnection();
+    
+    // Set headers to prevent caching - ensure fresh data on every request
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
     
     const pdf = await PDF.findById(req.params.id);
     if (!pdf) {
